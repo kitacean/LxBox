@@ -801,3 +801,37 @@ jobs:
           # [skip ci] чтобы не триггерить новый CI run на собственный коммит
           git commit -m "chore(release): update docs/latest.json → ${{ needs.meta.outputs.tag }} [skip ci]"
           git push origin HEAD:main
+
+
+  fork-release:
+    name: Publish Fork Release
+    needs: [meta, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.run_mode == 'build-fast' || github.event.inputs.run_mode == 'build')
+    steps:
+      - name: Download APKs
+        uses: actions/download-artifact@v8
+        with:
+          name: android-apks-release
+          path: release-artifacts
+
+      - name: Rename APKs
+        run: |
+          VERSION="${{ needs.meta.outputs.version }}"
+          for f in release-artifacts/app-*-release.apk; do
+            VARIANT=$(basename "$f" | sed -E 's/^app-(.*)-release\.apk$/\1/')
+            mv "$f" "release-artifacts/LxBox-${VERSION}-${VARIANT}.apk"
+          done
+          ls -la release-artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: "v${{ needs.meta.outputs.version }}"
+          name: "L×Box v${{ needs.meta.outputs.version }}"
+          generate_release_notes: true
+          files: release-artifacts/LxBox-*.apk
