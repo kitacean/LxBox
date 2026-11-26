@@ -663,6 +663,15 @@ class _EncryptionKeyTile extends StatefulWidget {
   State<_EncryptionKeyTile> createState() => _EncryptionKeyTileState();
 }
 
+class _EncryptionKeyTile extends StatefulWidget {
+  const _EncryptionKeyTile({required this.url});
+
+  final String url;
+
+  @override
+  State<_EncryptionKeyTile> createState() => _EncryptionKeyTileState();
+}
+
 class _EncryptionKeyTileState extends State<_EncryptionKeyTile> {
   String? _keyHex;
 
@@ -697,6 +706,7 @@ class _EncryptionKeyTileState extends State<_EncryptionKeyTile> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
+          // l10n-exempt: fork-only UI
           title: const Text('Ключ шифрования (AES-256)'),
           content: TextField(
             controller: ctrl,
@@ -705,6 +715,7 @@ class _EncryptionKeyTileState extends State<_EncryptionKeyTile> {
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
             decoration: InputDecoration(
               border: const OutlineInputBorder(),
+              // l10n-exempt: fork-only UI
               hintText: '64 hex-символа (пусто = удалить)',
               errorText: error,
             ),
@@ -715,11 +726,13 @@ class _EncryptionKeyTileState extends State<_EncryptionKeyTile> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
+              // l10n-exempt: fork-only UI
               child: const Text('Отмена'),
             ),
             if ((_keyHex ?? '').isNotEmpty)
               TextButton(
                 onPressed: () => Navigator.pop(ctx, ''),
+                // l10n-exempt: fork-only UI
                 child: const Text('Удалить'),
               ),
             FilledButton(
@@ -733,6 +746,7 @@ class _EncryptionKeyTileState extends State<_EncryptionKeyTile> {
                 }
                 Navigator.pop(ctx, v);
               },
+              // l10n-exempt: fork-only UI
               child: const Text('Сохранить'),
             ),
           ],
@@ -753,6 +767,7 @@ class _EncryptionKeyTileState extends State<_EncryptionKeyTile> {
   Widget build(BuildContext context) {
     return ListTile(
       leading: const Icon(Icons.key_outlined, size: 20),
+      // l10n-exempt: fork-only UI
       title: const Text('Ключ расшифровки'),
       subtitle: Text(
         _subtitle(),
