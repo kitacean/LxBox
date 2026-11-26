@@ -8,6 +8,7 @@ import '../../../models/source_replace.dart';
 import '../../../models/tls_policy.dart';
 import '../../source_replace_screen.dart';
 import '../../../services/subscription/input_helpers.dart';
+import '../../../services/subscription/sub_decryptor.dart';
 import '../../../services/subscription/user_agent.dart';
 import '../../../widgets/detour_target_picker.dart' show detourLinkDisplay;
 import '../detour_mode.dart';
@@ -602,6 +603,8 @@ class SubscriptionSettingsTab extends StatelessWidget {
             onTap: onEditSource,
           );
         }),
+        if (!isFileSubscription(list.url))
+          _EncryptionKeyTile(url: list.url),
         // §129/§685 — Update interval: -1 = никогда; 0 = «As subscription»
         // (серверный заголовок, без него 24 ч); >0 = раз в N часов.
         ListTile(
@@ -647,6 +650,119 @@ class SubscriptionSettingsTab extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _EncryptionKeyTile extends StatefulWidget {
+  const _EncryptionKeyTile({required this.url});
+
+  final String url;
+
+  @override
+  State<_EncryptionKeyTile> createState() => _EncryptionKeyTileState();
+}
+
+class _EncryptionKeyTileState extends State<_EncryptionKeyTile> {
+  String? _keyHex;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _EncryptionKeyTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) _load();
+  }
+
+  Future<void> _load() async {
+    final saved = await SubDecryptor.getKeyForUrl(widget.url);
+    if (mounted) setState(() => _keyHex = saved);
+  }
+
+  String _subtitle() {
+    final k = _keyHex;
+    if (k == null || k.isEmpty) return 'Не задан (обычная подписка)';
+    return '${k.substring(0, 8)}…${k.substring(k.length - 4)}';
+  }
+
+  Future<void> _edit() async {
+    final ctrl = TextEditingController(text: _keyHex ?? '');
+    String? error;
+
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Ключ шифрования (AES-256)'),
+          content: TextField(
+            controller: ctrl,
+            autofocus: true,
+            maxLines: 2,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              hintText: '64 hex-символа (пусто = удалить)',
+              errorText: error,
+            ),
+            onChanged: (_) {
+              if (error != null) setDialogState(() => error = null);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Отмена'),
+            ),
+            if ((_keyHex ?? '').isNotEmpty)
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, ''),
+                child: const Text('Удалить'),
+              ),
+            FilledButton(
+              onPressed: () {
+                final v = ctrl.text.trim();
+                if (v.isNotEmpty && !SubDecryptor.isValidHexKey(v)) {
+                  setDialogState(
+                    () => error = 'Нужно ровно 64 hex-символа (0-9, a-f)',
+                  );
+                  return;
+                }
+                Navigator.pop(ctx, v);
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    ctrl.dispose();
+    if (result == null) return;
+
+    await SubDecryptor.setKeyForUrl(widget.url, result);
+    if (mounted) {
+      setState(() => _keyHex = result.isEmpty ? null : result);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: const Icon(Icons.key_outlined, size: 20),
+      title: const Text('Ключ расшифровки'),
+      subtitle: Text(
+        _subtitle(),
+        style: TextStyle(
+          fontFamily: (_keyHex ?? '').isNotEmpty ? 'monospace' : null,
+          fontSize: (_keyHex ?? '').isNotEmpty ? 12 : null,
+        ),
+      ),
+      trailing: const Icon(Icons.edit, size: 18),
+      onTap: _edit,
     );
   }
 }
