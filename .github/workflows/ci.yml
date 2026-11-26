@@ -457,27 +457,9 @@ jobs:
           } > android/key.properties
 
       - name: Build APKs (one run per target)
-        # §379 — `--split-per-abi` УБРАН: он переписывает versionCode как
-        # `ABI × 1000 + code` (FlutterPlugin.kt:623), затирая нашу схему.
-        # Вместо одного прогона со сплитом — по прогону на таргет, каждый со
-        # своим `--build-number` (последняя цифра = ABI).
-        #
-        # ABI-цифры: 0=universal, 1=armeabi-v7a, 2=arm64-v8a, 4=x86_64.
-        #
-        # Таргеты:
-        #   - universal:    fat APK, все 3 ABI (~75 MB) — fallback для тех, кто
-        #                   не знает свою архитектуру.
-        #   - arm64-v8a:    95%+ современных Android-устройств.
-        #   - armeabi-v7a:  старые / Android Go бюджет (Itel A48, Tecno Pop 5).
-        #   - x86_64:       эмуляторы / Chromebook с Android-runtime.
-        #
-        # LXBOX_ABI_FILTER сужает native libs из AAR (libbox 55-66 MB на ABI):
-        # `--target-platform` влияет только на flutter engine + Dart AOT, .so из
-        # Maven gradle подтягивает под все ABI и APK раздувается.
-        #
-        # Каждый прогон пишет `app-release.apk` — сразу переименовываем, иначе
-        # следующий таргет перетрёт.
         shell: bash
+        env:
+          SUB_ENC_KEY: ${{ secrets.SUB_ENC_KEY }}
         run: |
           set -euo pipefail
           OUT=build/app/outputs/flutter-apk
@@ -486,30 +468,21 @@ jobs:
             local CODE
             CODE=$(../scripts/version-code.sh "$CODE_VERSION" "$VARIANT")
             echo "::group::Build $VARIANT (versionCode=$CODE)"
-            # §390 — БЕЗ `--dart-define=LXBOX_DISTRIBUTION`, намеренно.
-            # F-Droid собирает APK из этих же исходников и сверяет байты со
-            # своей сборкой (`binary:` в рецепте) — это даёт reproducible
-            # builds и подпись НАШИМ ключом вместо F-Droid'овского. Любой
-            # define попадает в скомпилированный Dart и ломает сверку.
-            # Поэтому канал у APK определяется рантаймом по установщику:
-            # GitHub-установка (файловый менеджер/браузер/adb) → github,
-            # установка из клиента F-Droid → fdroid. Обе ветки верны.
-            # Define остаётся только у AAB — Play раздаёт свой артефакт, с
-            # ним `binary:` не сверяется.
             if [ -n "$ABI_FILTER" ]; then
               LXBOX_ABI_FILTER="$ABI_FILTER" \
                 flutter build apk --release \
+                  --dart-define=SUB_ENC_KEY="$SUB_ENC_KEY" \
                   --target-platform "$PLATFORM" \
                   --build-name "$VERSION_NAME" --build-number "$CODE"
             else
               flutter build apk --release \
+                --dart-define=SUB_ENC_KEY="$SUB_ENC_KEY" \
                 --build-name "$VERSION_NAME" --build-number "$CODE"
             fi
             mv "$OUT/app-release.apk" "$OUT/app-${VARIANT}-release.apk"
             echo "::endgroup::"
           }
           if [ "${{ github.event.inputs.run_mode }}" = "build-fast" ]; then
-            # build-fast — один таргет из входа `abi` (по умолчанию arm64-v8a).
             case "${{ github.event.inputs.abi }}" in
               universal)   build_one universal   "android-arm,android-arm64,android-x64" "" ;;
               armeabi-v7a) build_one armeabi-v7a android-arm                             armeabi-v7a ;;
