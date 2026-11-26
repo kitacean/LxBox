@@ -1,0 +1,61 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # Runs daily at 04:00 UTC (07:00 MSK)
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PAT }}
+
+      - name: Sync with Leadaxe/LxBox
+        id: sync
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          set -euo pipefail
+          BRANCH="${GITHUB_REF_NAME}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/Leadaxe/LxBox.git
+          git fetch upstream "$BRANCH"
+
+          BEHIND=$(git rev-list --count "HEAD..upstream/$BRANCH")
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "Already up to date."
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git merge "upstream/$BRANCH" --no-edit; then
+            git merge --abort || true
+            echo "::error::Merge conflict with upstream. Resolve manually or re-apply patch."
+            exit 1
+          fi
+
+          git push origin "$BRANCH"
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger APK build if updated
+        if: steps.sync.outputs.updated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          gh workflow run ci.yml \
+            --ref "${GITHUB_REF_NAME}" \
+            -f run_mode=build-fast \
+            -f abi=arm64-v8a
+            
