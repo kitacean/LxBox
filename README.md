@@ -4,18 +4,18 @@
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Dart](https://img.shields.io/badge/Dart-3.11%2B-blue)](https://dart.dev/)
 
-A personal fork of **[Leadaxe/LxBox](https://github.com/Leadaxe/LxBox)** — the open-source Android VPN and proxy client powered by [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) — extended with transparent client-side decryption for **AES-256-GCM encrypted subscriptions** and automated release builds.
+A private fork of **[Leadaxe/LxBox](https://github.com/Leadaxe/LxBox)** — an open-source Android VPN and proxy client powered by [sing-box-lx](https://github.com/Leadaxe/sing-box-lx). This version adds client-side **AES-256-GCM** subscription decryption and automated APK delivery to a private Telegram channel.
 
 ---
 
 ## What's different from upstream
 
 - **AES-256-GCM subscription decryption (`app/lib/services/subscription/sub_decryptor.dart`)**
-  Subscriptions prefixed with `ENC:` are automatically decrypted inside `fetchRaw` before parsing. This allows serving subscription endpoints through third-party CDNs without exposing server addresses, UUIDs, or REALITY parameters in plaintext. Standard unencrypted subscriptions (Base64, URI lists, Xray/sing-box JSON) continue to work unchanged.
-- **Custom signing & CI key injection (`.github/workflows/ci.yml`)**
-  Release APKs are built with `--dart-define=SUB_ENC_KEY=...` and signed with a personal keystore so updates install cleanly over previous builds.
-- **Automated upstream sync & releases (`.github/workflows/sync-upstream.yml`)**
-  A daily GitHub Actions job pulls updates from `Leadaxe/LxBox`, triggers a `build-fast` (`arm64-v8a`) APK build when new commits arrive, and publishes the APK directly to **Releases**.
+  Subscriptions prefixed with `ENC:` are automatically decrypted in `fetchRaw` before parsing. Keys are never hardcoded into the APK; instead, they are kept in memory per subscription and prompted when needed. This allows proxying subscriptions through third-party CDNs without exposing server addresses, UUIDs, or REALITY parameters. Standard subscriptions (Base64, URI lists, JSON) work unchanged.
+- **Custom signing & Telegram APK delivery (`.github/workflows/ci.yml`)**
+  Release APKs are signed with a personal keystore and sent directly to a private Telegram channel. Builds are neither published to GitHub Releases nor retained in GitHub Actions artifacts.
+- **Automated upstream sync (`.github/workflows/sync-upstream.yml`)**
+  A GitHub Actions workflow regularly pulls updates from `Leadaxe/LxBox` and triggers a `build-fast` (`arm64-v8a`) build whenever new commits arrive.
 
 ---
 
@@ -27,8 +27,8 @@ The client expects a plain-text response formatted as:
 ENC:<base64(iv_12_bytes + ciphertext + gcm_tag_16_bytes)>
 ```
 
-- **Cipher:** AES-256-GCM (256-bit key, 96-bit random IV per response, 128-bit authentication tag)
-- **Plaintext:** Any standard subscription format supported by L×Box (Base64, URI list, JSON, including inline `# profile-title:` / `# subscription-userinfo:` comments)
+- **Cipher:** AES-256-GCM (256-bit key, random 96-bit IV per response, 128-bit authentication tag)
+- **Payload:** Any standard subscription format supported by L×Box (Base64, URI list, JSON, including `# profile-title:` and `# subscription-userinfo:` comments)
 
 ---
 
@@ -40,22 +40,23 @@ Configure these under **Settings → Secrets and variables → Actions**:
 
 | Secret | Description |
 |--------|-------------|
-| `SUB_ENC_KEY` | 64-character hex string (32-byte AES-256 key, e.g. `openssl rand -hex 32`) |
-| `ANDROID_KEYSTORE_BASE64` | Base64-encoded `.jks` / PKCS12 release keystore |
+| `TG_BOT_TOKEN` | Telegram bot token from `@BotFather` used to send built APKs |
+| `TG_CHAT_ID` | Private Telegram channel ID (`-100...`) where the bot posts builds |
+| `ANDROID_KEYSTORE_BASE64` | Base64-encoded release keystore (`.jks` / PKCS12) |
 | `ANDROID_KEYSTORE_PASSWORD` | Keystore password |
-| `ANDROID_KEY_PASSWORD` | Key password |
+| `ANDROID_KEY_PASSWORD` | Signing key password |
 | `ANDROID_KEY_ALIAS` | Key alias inside the keystore |
-| `SYNC_PAT` | Classic Personal Access Token (`repo` + `workflow` scopes) for `sync-upstream.yml` |
+| `SYNC_PAT` | Classic Personal Access Token (`repo` and `workflow` scopes) for `sync-upstream.yml` |
 
 ### Manual build
 
-Run **Actions → CI → Run workflow** with `run_mode: build-fast` and `abi: arm64-v8a`. The signed APK will be published under **Releases**.
+Run **Actions → CI → Run workflow** with `run_mode: build-fast` and `abi: arm64-v8a`. The signed APK will be delivered to your private Telegram channel.
 
 ---
 
 ## Upstream features & documentation
 
-All core protocols (VLESS REALITY/XHTTP/ML-KEM-768, VMess, Trojan, Shadowsocks, Hysteria2, TUIC v5, AnyTLS, NaïveProxy, WireGuard, AmneziaWG 2.0, Cloudflare WARP / MASQUE, Tailscale), routing rules, DNS groups, chains, and diagnostics come from upstream **[Leadaxe/LxBox](https://github.com/Leadaxe/LxBox)**:
+All core protocols (VLESS REALITY/XHTTP/ML-KEM-768, VMess, Trojan, Shadowsocks, Hysteria2, TUIC v5, AnyTLS, NaïveProxy, WireGuard, AmneziaWG 2.0, Cloudflare WARP / MASQUE, Tailscale), routing rules, DNS groups, chains, and diagnostics are inherited from **[Leadaxe/LxBox](https://github.com/Leadaxe/LxBox)**:
 
 - [User Guide](docs/USER_GUIDE.md)
 - [Feature Catalogue](docs/spec/features/README.md)
@@ -67,4 +68,4 @@ All core protocols (VLESS REALITY/XHTTP/ML-KEM-768, VMess, Trojan, Shadowsocks, 
 
 ## License
 
-This fork retains the [GNU General Public License v3.0](LICENSE) of upstream **L×Box** and **sing-box**.
+This fork is distributed under the [GNU General Public License v3.0](LICENSE) of upstream **L×Box** and **sing-box**.
