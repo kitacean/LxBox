@@ -190,7 +190,8 @@ Future<FetchResult> fetchRaw(SubscriptionSource source,
   final c = client ?? http.Client();
   try {
     final res = await _fetch(source, c);
-    final decrypted = await SubDecryptor.decryptIfNeeded(res.body);
+    final url = source is UrlSource ? source.url : '';
+    final decrypted = await SubDecryptor.decryptIfNeeded(res.body, url: url);
     if (identical(decrypted, res.body)) return res;
     return FetchResult(decrypted, res.meta, res.headers);
   } finally {
