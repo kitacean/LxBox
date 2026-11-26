@@ -663,15 +663,6 @@ class _EncryptionKeyTile extends StatefulWidget {
   State<_EncryptionKeyTile> createState() => _EncryptionKeyTileState();
 }
 
-class _EncryptionKeyTile extends StatefulWidget {
-  const _EncryptionKeyTile({required this.url});
-
-  final String url;
-
-  @override
-  State<_EncryptionKeyTile> createState() => _EncryptionKeyTileState();
-}
-
 class _EncryptionKeyTileState extends State<_EncryptionKeyTile> {
   String? _keyHex;
 
