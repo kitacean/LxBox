@@ -14,6 +14,7 @@ import '../app_log.dart';
 import '../parser/parse_all.dart';
 import 'http_cache.dart';
 import 'input_helpers.dart' show isFileSubscription;
+import 'sub_decryptor.dart';
 import 'subscription_identity.dart';
 import 'user_agent.dart';
 
@@ -188,7 +189,10 @@ Future<FetchResult> fetchRaw(SubscriptionSource source,
   final owned = client == null;
   final c = client ?? http.Client();
   try {
-    return await _fetch(source, c);
+    final res = await _fetch(source, c);
+    final decrypted = await SubDecryptor.decryptIfNeeded(res.body);
+    if (identical(decrypted, res.body)) return res;
+    return FetchResult(decrypted, res.meta, res.headers);
   } finally {
     if (owned) c.close();
   }
