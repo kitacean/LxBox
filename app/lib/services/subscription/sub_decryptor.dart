@@ -2,26 +2,80 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app_log.dart';
 import '../parser/engine/decoders.dart' show decodeUtf8Lenient;
 
 /// Расшифровка кастомных зашифрованных подписок формата:
 /// `ENC:<base64(iv_12 + ciphertext + gcm_tag_16)>`
-/// Ключ задаётся при сборке: `--dart-define=SUB_ENC_KEY=<64 hex chars>`
+///
+/// Ключи хранятся локально в `SharedPreferences` отдельно для каждого URL подписки.
 class SubDecryptor {
   static const String _prefix = 'ENC:';
-  static const String _keyHex = String.fromEnvironment('SUB_ENC_KEY');
+  static const String _prefsKey = 'lxbox_sub_enc_keys_v1';
 
   static final AesGcm _cipher = AesGcm.with256bits();
+  static final RegExp _hex64Re = RegExp(r'^[0-9a-fA-F]{64}$');
 
-  static Future<String> decryptIfNeeded(String body) async {
+  static bool isValidHexKey(String key) => _hex64Re.hasMatch(key.trim());
+
+  static Future> _loadMap() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_prefsKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.map((k, v) => MapEntry(k.toString(), v.toString()));
+      }
+    } catch (e) {
+      AppLog.I.warning('[subscription] Failed to read saved encryption keys: $e');
+    }
+    return {};
+  }
+
+  static Future<void> _saveMap(Map<String, String> map) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_prefsKey, jsonEncode(map));
+  }
+
+  static Future<String?> getKeyForUrl(String url) async {
+    final normalized = url.trim();
+    if (normalized.isEmpty) return null;
+    final map = await _loadMap();
+    return map[normalized];
+  }
+
+  static Future<void> setKeyForUrl(String url, String? hexKey) async {
+    final normalizedUrl = url.trim();
+    if (normalizedUrl.isEmpty) return;
+
+    final map = await _loadMap();
+    final trimmedKey = (hexKey ?? '').trim();
+
+    if (trimmedKey.isEmpty) {
+      map.remove(normalizedUrl);
+    } else {
+      if (!isValidHexKey(trimmedKey)) {
+        throw const FormatException('Encryption key must be 64 hex characters');
+      }
+      map[normalizedUrl] = trimmedKey;
+    }
+
+    await _saveMap(map);
+  }
+
+  static Future<void> removeKeyForUrl(String url) => setKeyForUrl(url, null);
+
+  static Future<String> decryptIfNeeded(String body, {required String url}) async {
     final trimmed = body.trim();
     if (!trimmed.startsWith(_prefix)) return body;
 
-    if (_keyHex.length != 64) {
-      AppLog.I.warning('[subscription] ENC payload received, but SUB_ENC_KEY is not set');
-      throw const FormatException('SUB_ENC_KEY is missing or invalid');
+    final keyHex = await getKeyForUrl(url);
+    if (keyHex == null || !isValidHexKey(keyHex)) {
+      AppLog.I.warning('[subscription] ENC payload received, but no valid key saved for this URL');
+      throw const FormatException('Subscription encryption key is missing or invalid');
     }
 
     final payloadB64 = trimmed.substring(_prefix.length).replaceAll(RegExp(r'\s+'), '');
@@ -40,7 +94,7 @@ class SubDecryptor {
 
     final clearBytes = await _cipher.decrypt(
       secretBox,
-      secretKey: SecretKey(_hexToBytes(_keyHex)),
+      secretKey: SecretKey(_hexToBytes(keyHex.trim())),
     );
 
     return decodeUtf8Lenient(clearBytes);
