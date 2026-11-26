@@ -41,9 +41,21 @@ jobs:
           fi
 
           if ! git merge "upstream/$BRANCH" --no-edit; then
-            git merge --abort || true
-            echo "::error::Merge conflict with upstream. Resolve manually or re-apply patch."
-            exit 1
+            # Автоматически оставляем свой README.md при конфликте
+            if git diff --name-only --diff-filter=U | grep -qx "README.md"; then
+              git checkout --ours README.md
+              git add README.md
+            fi
+
+            # Если остались конфликты в других файлах — безопасно отменяем
+            REMAINING=$(git diff --name-only --diff-filter=U)
+            if [ -n "$REMAINING" ]; then
+              git merge --abort || true
+              echo "::error::Merge conflict with upstream in: $REMAINING"
+              exit 1
+            fi
+
+            git commit --no-edit
           fi
 
           git push origin "$BRANCH"
@@ -58,4 +70,3 @@ jobs:
             --ref "${GITHUB_REF_NAME}" \
             -f run_mode=build-fast \
             -f abi=arm64-v8a
-            
