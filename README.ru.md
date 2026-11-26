@@ -4,58 +4,59 @@
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Dart](https://img.shields.io/badge/Dart-3.11%2B-blue)](https://dart.dev/)
 
-Личный форк **[Leadaxe/LxBox](https://github.com/Leadaxe/LxBox)** — открытого Android-клиента VPN и прокси на базе [sing-box-lx](https://github.com/Leadaxe/sing-box-lx), дополненный прозрачной расшифровкой подписок в **AES-256-GCM** на стороне клиента и автоматической сборкой релизов.
+Приватный форк **[Leadaxe/LxBox](https://github.com/Leadaxe/LxBox)** — Android-клиента VPN и прокси с открытым исходным кодом на базе [sing-box-lx](https://github.com/Leadaxe/sing-box-lx). В этой версии добавлена расшифровка подписок **AES-256-GCM** на стороне клиента и автоматическая отправка собранных APK в закрытый Telegram-канал.
 
 ---
 
 ## Отличия от оригинала
 
 - **Расшифровка подписок AES-256-GCM (`app/lib/services/subscription/sub_decryptor.dart`)**
-  Подписки с префиксом `ENC:` автоматически расшифровываются внутри `fetchRaw` до парсинга. Это позволяет отдавать ссылки подписок через сторонние CDN, не раскрывая адреса серверов, UUID или параметры REALITY в открытом виде. Обычные незашифрованные подписки (Base64, списки ссылок, Xray/sing-box JSON) продолжают работать как раньше.
-- **Своя подпись и проброс ключа в CI (`.github/workflows/ci.yml`)**
-  Релизные APK собираются с флагом `--dart-define=SUB_ENC_KEY=...` и подписываются личным хранилищем ключей, чтобы обновления ставились поверх прошлых сборок без переустановки.
-- **Автосинхронизация с апстримом и публикация релизов (`.github/workflows/sync-upstream.yml`)**
-  Ежедневная задача GitHub Actions подтягивает обновления из `Leadaxe/LxBox`, при появлении новых коммитов запускает сборку `build-fast` (`arm64-v8a`) и выкладывает готовый APK в **Releases**.
+  Подписки с префиксом `ENC:` автоматически расшифровываются в `fetchRaw` до парсинга. Ключи не вшиваются в APK, а хранятся в оперативной памяти отдельно для каждой подписки и запрашиваются по мере необходимости. Это позволяет проксировать подписки через сторонние CDN, не раскрывая адреса серверов, UUID и параметры REALITY. Обычные подписки (Base64, списки ссылок, JSON) работают без изменений.
+- **Своя подпись и доставка APK в Telegram (`.github/workflows/ci.yml`)**
+  Релизные APK подписываются собственным keystore и отправляются напрямую в закрытый Telegram-канал. Сборки не публикуются в GitHub Releases и не сохраняются в артефактах Actions.
+- **Автосинхронизация с апстримом (`.github/workflows/sync-upstream.yml`)**
+  Workflow в GitHub Actions регулярно подтягивает обновления из `Leadaxe/LxBox` и при появлении новых коммитов запускает сборку `build-fast` (`arm64-v8a`).
 
 ---
 
 ## Формат зашифрованной подписки
 
-Клиент ждёт ответ в виде обычного текста формата:
+Клиент ожидает текстовый ответ в формате:
 
 ```text
 ENC:<base64(iv_12_байт + шифртекст + gcm_tag_16_байт)>
 ```
 
 - **Шифр:** AES-256-GCM (256-битный ключ, случайный 96-битный IV на каждый ответ, 128-битный тег аутентификации)
-- **Открытый текст:** любой стандартный формат подписки, поддерживаемый L×Box (Base64, список URI, JSON, включая inline-комментарии `# profile-title:` / `# subscription-userinfo:`)
+- **Содержимое:** любой стандартный формат подписки, который поддерживает L×Box (Base64, список URI, JSON, включая комментарии `# profile-title:` и `# subscription-userinfo:`)
 
 ---
 
-## Сборка этого форка
+## Сборка форка
 
-### Нужные секреты GitHub Actions
+### Необходимые секреты GitHub Actions
 
-Добавь их в разделе **Settings → Secrets and variables → Actions**:
+Секреты задаются в разделе **Settings → Secrets and variables → Actions**:
 
 | Секрет | Описание |
 |--------|----------|
-| `SUB_ENC_KEY` | 64-символьная hex-строка (32-байтный ключ AES-256, например `openssl rand -hex 32`) |
-| `ANDROID_KEYSTORE_BASE64` | Хранилище ключей релиза (`.jks` / PKCS12) в формате Base64 |
-| `ANDROID_KEYSTORE_PASSWORD` | Пароль от хранилища ключей |
-| `ANDROID_KEY_PASSWORD` | Пароль от ключа |
-| `ANDROID_KEY_ALIAS` | Алиас ключа внутри хранилища |
+| `TG_BOT_TOKEN` | Токен Telegram-бота от `@BotFather` для отправки собранных APK |
+| `TG_CHAT_ID` | ID закрытого Telegram-канала (формат `-100...`), куда бот присылает сборки |
+| `ANDROID_KEYSTORE_BASE64` | Файл релизного keystore (`.jks` / PKCS12) в Base64 |
+| `ANDROID_KEYSTORE_PASSWORD` | Пароль от keystore |
+| `ANDROID_KEY_PASSWORD` | Пароль от ключа подписи |
+| `ANDROID_KEY_ALIAS` | Алиас ключа внутри keystore |
 | `SYNC_PAT` | Classic Personal Access Token (права `repo` и `workflow`) для `sync-upstream.yml` |
 
 ### Ручная сборка
 
-Запусти **Actions → CI → Run workflow** с параметрами `run_mode: build-fast` и `abi: arm64-v8a`. Подписанный APK появится в разделе **Releases**.
+Запустите **Actions → CI → Run workflow** с параметрами `run_mode: build-fast` и `abi: arm64-v8a`. Готовый подписанный APK придёт в закрытый Telegram-канал.
 
 ---
 
 ## Возможности оригинала и документация
 
-Все базовые протоколы (VLESS REALITY/XHTTP/ML-KEM-768, VMess, Trojan, Shadowsocks, Hysteria2, TUIC v5, AnyTLS, NaïveProxy, WireGuard, AmneziaWG 2.0, Cloudflare WARP / MASQUE, Tailscale), правила маршрутизации, группы DNS, цепочки и диагностика взяты из оригинального **[Leadaxe/LxBox](https://github.com/Leadaxe/LxBox)**:
+Все базовые протоколы (VLESS REALITY/XHTTP/ML-KEM-768, VMess, Trojan, Shadowsocks, Hysteria2, TUIC v5, AnyTLS, NaïveProxy, WireGuard, AmneziaWG 2.0, Cloudflare WARP / MASQUE, Tailscale), правила маршрутизации, группы DNS, цепочки и диагностика унаследованы от **[Leadaxe/LxBox](https://github.com/Leadaxe/LxBox)**:
 
 - [Руководство пользователя](docs/USER_GUIDE.md)
 - [Каталог фич](docs/spec/features/README.md)
@@ -67,4 +68,4 @@ ENC:<base64(iv_12_байт + шифртекст + gcm_tag_16_байт)>
 
 ## Лицензия
 
-В этом форке сохранена лицензия [GNU General Public License v3.0](LICENSE) оригинальных проектов **L×Box** и **sing-box**.
+Форк распространяется под лицензией [GNU General Public License v3.0](LICENSE) оригинальных проектов **L×Box** и **sing-box**.
