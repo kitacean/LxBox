@@ -79,9 +79,6 @@ jobs:
             echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
             echo "is_release=true" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event.inputs.run_mode }}" == "release" ]]; then
-            # §219 — release-режим требует HEAD ровно на теге, иначе
-            # git describe даёт 'vX.Y.Z-N-gSHA' → вводящая в заблуждение
-            # pre-release версия. Падаем явно, а не собираем мусорный тег.
             if ! VERSION="$(git describe --tags --exact-match 2>/dev/null)"; then
               echo "::error::run_mode=release, но HEAD не на теге. Пуш тега vX.Y.Z или запусти на теге." >&2
               exit 1
@@ -90,28 +87,11 @@ jobs:
             echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
             echo "is_release=true" >> "$GITHUB_OUTPUT"
           else
-            # run_mode=build — сборка без тега. Версия пинится к ПОСЛЕДНЕМУ
-            # релизному тегу: `X.Y.Z-dev.<коммитов с тега>` (та же схема, что в
-            # scripts/build-local-apk.sh, §186). Раньше здесь был `dev-<sha>`,
-            # который не semver — шаг инъекции откатывался на `0.0.0`, и сборка
-            # уезжала как `0.0.0-dev-<sha>` с versionCode 500. В Play такой
-            # выпуск не опознать, а код 500 занимается в аккаунте навсегда.
-            #
-            # versionCode считается от версии ТЕГА (суффикс -dev.N формула
-            # срезает), поэтому dev-сборка получает ровно код своего релиза и не
-            # обгоняет его: `install -r` проходит в обе стороны.
-            #
-            # Тега может не быть (свежий форк, ветка без релизов) — тогда
-            # прежний фоллбэк на 0.0.0, чтобы прогон не падал.
             TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
             if [ -n "$TAG" ]; then
               SINCE="$(git rev-list "${TAG}..HEAD" --count)"
               VERSION="${TAG#v}-dev.${SINCE}"
             else
-              # Отдаём именно `dev-<sha>` (не semver) — шаг инъекции сам
-              # префиксует его до 0.0.0-dev-<sha> и берёт для кода 0.0.0.
-              # Готовую `0.0.0-dev-<sha>` отдавать нельзя: она пройдёт как
-              # semver, и формула упадёт на суффиксе -dev-<sha>.
               SHORT_SHA="$(git rev-parse --short=7 HEAD)"
               VERSION="dev-${SHORT_SHA}"
             fi
@@ -119,13 +99,6 @@ jobs:
             echo "tag=" >> "$GITHUB_OUTPUT"
             echo "is_release=false" >> "$GITHUB_OUTPUT"
           fi
-          # §436 — релиз-кандидат (vX.Y.Z-rc.N) до пользователей stable не
-          # доходит: GitHub-релиз помечается pre-release (/releases/latest, куда
-          # ходит UpdateChecker, его не видит), docs/latest.json не обновляется.
-          # §619 — в Google Play rc уходит, но в открытое тестирование (трек
-          # beta), не в production: выбор трека — шаг target job google-play.
-          # Hotfix (vX.Y.Z-hotfixN) — полноценный релиз, флаг false.
-          # Других суффиксов не бывает: version-code.sh падает на неизвестном.
           if [[ "$VERSION" == *-rc.* ]]; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
           else
@@ -133,8 +106,6 @@ jobs:
           fi
 
   checks:
-    # build-fast — APK как можно быстрее: проверки пропускаются (их делает
-    # push-прогон той же головы), android стартует сразу после meta.
     if: github.event.inputs.run_mode != 'build-fast'
     runs-on: ubuntu-latest
     defaults:
@@ -158,48 +129,19 @@ jobs:
       - name: Dependencies
         run: flutter pub get
 
-      # Точечный режим (workflow_dispatch + test_path) пропускает analyze —
-      # цель такого прогона быстро проверить конкретный тест, не весь набор.
       - name: Analyze
         if: ${{ github.event.inputs.test_path == '' }}
         run: flutter analyze
 
-      # §285 — l10n guard-rails (tool/l10n/README.md): template-overlay,
-      # natural-key словарь (ui_check заменил ARB-эпохи arb_check),
-      # hardcoded-ratchet, kotlin-guard. --strict безусловен на каждом push/PR:
-      # baseline пуст, ru-словарь переведён на 100%, orphan'ов нет — warnings
-      # фатальны везде (протухший src-hash, непереведённый/orphan ключ).
-      # §379 — в develop `version:` обязан оставаться placeholder'ом. Реальная
-      # версия пишется ровно один раз, на merge-коммите в main (RELEASE_PROCESS
-      # §2.4), и обратный merge-back (§2.6) её оттуда притаскивает — если забыть
-      # откатить, версия снова начнёт «дрожать» в ветке разработки (ровно от
-      # этого ушли в v2.11.x, удалив pre-commit хук). Глазами это не видно:
-      # merge проходит чисто, а сборка всё равно перепишет версию перед
-      # `flutter build` — то есть ни один тест не упадёт. Отсюда guard, а не
-      # автоматика: чинить надо `git checkout HEAD -- app/pubspec.yaml` до
-      # коммита merge-back'а.
-      #
-      # Только develop: на main и на теге версия обязана быть реальной (её
-      # читает F-Droid checkupdates с коммита тега).
       - name: Pubspec version is a placeholder (develop only)
         if: ${{ github.ref == 'refs/heads/develop' || github.base_ref == 'develop' }}
         run: |
-          # Путь без префикса app/: у job `checks` defaults.run.working-directory
-          # = app, все run-шаги уже стартуют оттуда.
           VERSION="$(grep -E '^version:' pubspec.yaml | head -1 | sed -E 's/^version:[[:space:]]*//')"
           echo "pubspec version: $VERSION"
-          # Пустое значение — это не «версия не та», а сломанная проверка
-          # (переехал файл, съехал working-directory). Своё сообщение, иначе
-          # guard соврёт про реальную версию, показав пустые кавычки.
           if [ -z "$VERSION" ]; then
             echo "::error file=app/pubspec.yaml::Не удалось прочитать version: из pubspec.yaml — проверьте путь и working-directory шага."
             exit 1
           fi
-          # Placeholder опознаём по суффиксу `-dev.N` (текущая форма) либо по
-          # версии 0.0.0 (историческая, v2.11.x–v2.19.x). Всё остальное, что
-          # выглядит как X.Y.Z, — реальная версия, которой в develop не место.
-          # Проверяем так, а не «релизным» шаблоном X.Y.Z+CODE: тогда `2.20.4`
-          # без кода сборки проскочил бы молча.
           if ! printf '%s' "$VERSION" | grep -qE '(-dev\.[0-9]+|^0\.0\.0(\+|$))'; then
             echo "::error file=app/pubspec.yaml::В develop попала реальная версия '$VERSION'. Ожидается placeholder с суффиксом -dev.N (RELEASE_PROCESS.md §2.6, §379). Лечение: git checkout HEAD -- app/pubspec.yaml до коммита merge-back'а."
             exit 1
@@ -214,22 +156,11 @@ jobs:
           dart run tool/l10n/hardcoded_check.dart --strict
           dart run tool/l10n/kotlin_check.dart --strict
 
-      # §360 — парность двуязычной документации (README ↔ README.ru,
-      # USER_GUIDE ↔ USER_GUIDE.ru). Ловит ровно то, что не видно глазами:
-      # раздел дописали в один язык и забыли во второй. Сравнивает скелет
-      # (число и уровни заголовков), блоки кода и ссылки на файлы репо — текст
-      # заголовков НЕ сверяется, перевод не обязан быть дословным.
-      # --strict: расхождение в ссылках (warning) тоже фатально.
       - name: Docs parity
         if: ${{ github.event.inputs.test_path == '' }}
         working-directory: app
         run: dart run tool/docs/parity_check.dart --strict
 
-      # §436 — описание выпуска для Google Play берётся из тех же
-      # fastlane/metadata/android/<locale>/changelogs/<versionCode>.txt, что
-      # читает F-Droid. Play режет описание на 500 символах и отвергает
-      # загрузку целиком. Ловим на push, а не на теге: тег неподвижен, чинить
-      # файл после него уже некуда. Считаем символы, не байты (кириллица).
       - name: Fastlane changelogs ≤ 500 chars
         if: ${{ github.event.inputs.test_path == '' }}
         working-directory: ${{ github.workspace }}
@@ -249,10 +180,6 @@ jobs:
           fi
           exit "$FAIL"
 
-      # SPEC 103 фаза 5 — общий контракт с лаунчером. Источник живёт в его
-      # репозитории, здесь лежит копия; править её руками нельзя — правка
-      # потеряется при следующей синхронизации. Шаг это и ловит. Копии в CI
-      # обычно нет (git её игнорирует) — тогда шаг просто сообщает об этом.
       - name: Contract lock
         if: ${{ github.event.inputs.test_path == '' }}
         working-directory: app
@@ -263,10 +190,6 @@ jobs:
           TEST_PATH="${{ github.event.inputs.test_path }}"
           TEST_NAME="${{ github.event.inputs.test_name }}"
           if [ -n "$TEST_PATH" ]; then
-            # Точечный прогон: -r expanded печатает каждый тест по ходу (живой
-            # прогресс в логе), --name <substr> сужает до конкретной группы/теста.
-            # §219 — аргументы через массив (без eval): пути/имена с пробелами
-            # не разбиваются, нет shell re-parsing интерполированных inputs.
             ARGS=(test -r expanded "$TEST_PATH")
             if [ -n "$TEST_NAME" ]; then
               ARGS+=(--name "$TEST_NAME")
@@ -275,24 +198,10 @@ jobs:
             echo "::notice::Pinpoint test run: $TEST_PATH"
             flutter "${ARGS[@]}"
           else
-            # Полный прогон — сборками: K точек входа вместо одной на файл
-            # (компиляция и старт каждого файла съедали бóльшую часть
-            # времени шага). Файлы из kExcluded генератора идут отдельно.
-            # Сброс глобального состояния между файлами —
-            # test/support/test_globals.dart (DEVELOPMENT_GUIDE → Testing).
             dart run tool/gen_test_bundles.dart
             flutter test test_bundle $(cat test_bundle/excluded.txt)
           fi
 
-  # §525 — корпус публичных подписок: прогон конвейера разбора по 68 снимкам
-  # реальных списков. ОТДЕЛЬНЫМ job'ом и НЕ блокирующий: красный корпус значит
-  # «числа разошлись с эталоном», то есть регрессия ИЛИ прогресс реестра, и
-  # разбираться с этим обязан человек. Ронять на нём сборку нельзя — контракт
-  # приезжает из чужого репозитория, и его правка красила бы здесь каждый
-  # соседний PR.
-  #
-  # В общий `flutter test` сьют не попадает: гейт — LX_CORPUS_PUBLIC (тегами
-  # не вышло, `flutter test` не пробрасывает ни --exclude-tags, ни -P).
   public-subs:
     name: PublicSubsCorpus
     if: ${{ github.event.inputs.test_path == '' && github.event.inputs.run_mode != 'build-fast' }}
@@ -319,8 +228,6 @@ jobs:
       - name: Dependencies
         run: flutter pub get
 
-      # Отчёты пишутся, чтобы их можно было забрать артефактом и посмотреть,
-      # ЧТО именно разошлось; эталон не обновляется — это работа человека.
       - name: Corpus run (parse only, no core, no network)
         env:
           LX_CORPUS_PUBLIC: "1"
@@ -338,8 +245,6 @@ jobs:
           retention-days: 14
 
   android:
-    # build-fast пропускает checks; пропущенная зависимость иначе пропустила
-    # бы и android, поэтому условие явно разбирает результат checks.
     if: >-
       !cancelled() && needs.meta.result == 'success' &&
       (needs.checks.result == 'success' ||
@@ -355,8 +260,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # §379 — versionCode считается из версии, история для него больше не
-          # нужна. Полные refs оставлены для git-зависимых шагов (describe).
           fetch-depth: 0
 
       - name: Java 17
@@ -366,15 +269,9 @@ jobs:
           java-version: "17"
 
       - name: Android SDK Platform 37
-        # §721 — compileSdk 37 (androidx.appfunctions). AGP 9.1 сам докачивает
-        # платформу, но в том же прогоне её не находит («Failed to find target
-        # with hash string 'android-37'»); ставим заранее. Есть — no-op.
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-37.0" > /dev/null
 
       - name: Fetch sing-box-lx core (libbox.aar)
-        # §104 — ядро: fork Leadaxe/sing-box-lx (AWG2 + XHTTP). AAR не в git;
-        # скачиваем из GH Releases форка с проверкой SHA256. Пин версии —
-        # app/android/libbox.version (single source для local + CI).
         working-directory: .
         run: ./scripts/fetch-libbox.sh
 
@@ -390,36 +287,17 @@ jobs:
           cache: true
 
       - name: Inject release version from tag
-        # §379 — versionCode считается ИЗ ВЕРСИИ (scripts/version-code.sh),
-        # а не из `rev-list --count`. Число коммитов не функция от тега, поэтому
-        # версию нельзя было прочитать из исходников — это блокировало
-        # автообновление в F-Droid (UpdateCheckMode: None).
-        #
-        # Здесь пишем в pubspec версию `X.Y.Z` и БАЗУ кода (ABI=0). Финальную
-        # цифру ABI подставляет шаг сборки: по прогону на таргет, каждый со
-        # своим `+<code>`. `--split-per-abi` убран — он домножал бы ABI×1000
-        # поверх нашего числа (FlutterPlugin.kt:623).
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${{ needs.meta.outputs.version }}"
           VERSION="${VERSION#v}"
-          # run_mode=build обычно даёт `X.Y.Z-dev.N` (job meta пинит к
-          # последнему тегу) — форма semver, дальше её обрабатывает ветка else,
-          # а суффикс -dev.N срезает сама формула version-code.sh: код выходит
-          # ровно тот же, что у релиза этого тега.
-          #
-          # Сюда попадает только фоллбэк `0.0.0-dev-<sha>` — когда тега в
-          # репозитории нет вообще (свежий форк). Он не semver, pub такое
-          # отвергает; префиксуем до валидного pre-release, для кода берём
-          # 0.0.0 (→ 500), чтобы gradle не упал на нечисловом build-number.
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
             VERSION="0.0.0-${VERSION}"
             CODE_VERSION="0.0.0"
           else
             CODE_VERSION="$VERSION"
           fi
-          # База (ABI=0) — реальный код per-ABI считает шаг сборки.
           BUILD_NUMBER=$(../scripts/version-code.sh "$CODE_VERSION" universal)
           sed -i.bak -E "s/^version: .*/version: $VERSION+$BUILD_NUMBER/" pubspec.yaml
           rm -f pubspec.yaml.bak
@@ -497,341 +375,25 @@ jobs:
           fi
           ls -la "$OUT"/app-*-release.apk
 
-      - name: Upload APKs (release)
-        # Все 4 таргета: universal + 3 per-ABI.
-        uses: actions/upload-artifact@v7
-        with:
-          name: android-apks-release
-          path: app/build/app/outputs/flutter-apk/app-*-release.apk
-          if-no-files-found: error
-          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 1 || 30 }}
-
-      - name: Build AAB (Google Play)
-        if: github.event.inputs.run_mode != 'build-fast'
-        # Play принимает только AAB. Отдельный формат, отдельный канал:
-        # в GitHub Releases по-прежнему уходят APK (шаги выше), сюда не
-        # попадают — бандл забирает job google-play (§436) и отдаёт в Play API;
-        # артефакт прогона остаётся на случай ручной заливки.
-        #
-        # versionCode = код universal (ABI=0), тот же, что у fat APK этой
-        # версии. Play требует уникальности кода в пределах СВОЕГО аккаунта, а
-        # GitHub-релизы он не видит — пересечение безопасно. Своя ABI-цифра не
-        # заводится намеренно: набор в version-code.sh закрытый (0/1/2/4), а
-        # per-ABI коды внутри Play генерирует сам из бандла.
-        #
-        # ABI не сужаем (нет LXBOX_ABI_FILTER): бандл обязан нести все ABI —
-        # раздачей под конкретное устройство занимается Play.
-        #
-        # Подпись: тем же upload-ключом, что и APK (шаг keystore выше). В Play
-        # он ТОЛЬКО пропуск на загрузку — пользователям приложение уходит
-        # подписанным ключом Google (Play App Signing). Поэтому Play-сборка и
-        # GitHub-сборка имеют РАЗНЫЕ подписи и не обновляют друг друга.
-        shell: bash
-        run: |
-          set -euo pipefail
-          CODE=$(../scripts/version-code.sh "$CODE_VERSION" universal)
-          echo "::group::Build AAB (versionCode=$CODE)"
-          # §390 — уведомление об апдейте в этой сборке ведёт в Play, а не на
-          # GitHub: APK оттуда не встанет поверх (подпись Google).
-          flutter build appbundle --release \
-            --dart-define=LXBOX_DISTRIBUTION=play \
-            --build-name "$VERSION_NAME" --build-number "$CODE"
-          echo "::endgroup::"
-          ls -la build/app/outputs/bundle/release/app-release.aab
-
-      - name: Upload AAB (release)
-        if: github.event.inputs.run_mode != 'build-fast'
-        uses: actions/upload-artifact@v7
-        with:
-          name: android-aab-release
-          path: app/build/app/outputs/bundle/release/app-release.aab
-          if-no-files-found: error
-          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 1 || 30 }}
-
-  google-play:
-    name: GooglePlay
-    needs: [meta, android]
-    runs-on: ubuntu-latest
-    # §619 — релиз-кандидаты (-rc.N) тоже идут в Play, но на свой трек
-    # (открытое тестирование), см. шаг target.
-    if: needs.meta.outputs.is_release == 'true'
-    # §436 — AAB из job android уезжает в Play Console через Google Play
-    # Developer API от имени сервисного аккаунта (секрет
-    # PLAY_SERVICE_ACCOUNT_JSON = JSON-ключ целиком; права в Play Console —
-    # только выпуск на рабочий и тестовые треки). Без секрета job зелёный с
-    # warning: форки и прогоны без ключа не ломаем, AAB остаётся в артефакте.
-    #
-    # Параллелен release и publish-manifest, они от него НЕ зависят: провал
-    # заливки в Play не должен снимать GitHub-релиз.
-    #
-    # Трек и статус — repo variables, переключаются без коммита. Релиз и
-    # hotfix читают PLAY_*, релиз-кандидат — PLAY_RC_*:
-    #   PLAY_TRACK              production | internal | alpha | beta   (default production)
-    #   PLAY_RELEASE_STATUS     draft | completed                       (default draft)
-    #   PLAY_RC_TRACK           production | internal | alpha | beta   (default beta = открытое тестирование)
-    #   PLAY_RC_RELEASE_STATUS  draft | completed                       (default completed)
-    # draft: выпуск ложится в консоль черновиком, Publish жмёт человек.
-    # completed: уходит на проверку Google сам. Открытое тестирование
-    # проходит проверку Google так же, как production; страница Open testing
-    # должна быть заведена в консоли, иначе API отвергнет трек.
-    #   gh variable set PLAY_RELEASE_STATUS -b completed
-    steps:
-      - name: Checkout (changelogs + version-code.sh)
-        uses: actions/checkout@v7
-        with:
-          sparse-checkout: |
-            scripts/version-code.sh
-            fastlane/metadata/android
-          sparse-checkout-cone-mode: false
-
-      - name: Service account present?
-        id: gate
+      - name: Send APK to private Telegram channel
+        if: always() && (github.event.inputs.run_mode == 'build-fast' || github.event.inputs.run_mode == 'build')
         env:
-          KEY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-        run: |
-          if [ -z "$KEY" ]; then
-            echo "::warning::PLAY_SERVICE_ACCOUNT_JSON не задан — заливка в Google Play пропущена. AAB лежит в артефакте android-aab-release этого прогона."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Play track and status
-        id: target
-        if: steps.gate.outputs.enabled == 'true'
-        shell: bash
-        env:
-          IS_PRERELEASE: ${{ needs.meta.outputs.is_prerelease }}
-          RC_TRACK: ${{ vars.PLAY_RC_TRACK || 'beta' }}
-          RC_STATUS: ${{ vars.PLAY_RC_RELEASE_STATUS || 'completed' }}
-          REL_TRACK: ${{ vars.PLAY_TRACK || 'production' }}
-          REL_STATUS: ${{ vars.PLAY_RELEASE_STATUS || 'draft' }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          APP_VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          # §619 — rc в открытое тестирование, релиз/hotfix — как раньше.
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            TRACK="$RC_TRACK"; STATUS="$RC_STATUS"
-          else
-            TRACK="$REL_TRACK"; STATUS="$REL_STATUS"
-          fi
-          echo "track=$TRACK" >> "$GITHUB_OUTPUT"
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-          echo "track=$TRACK status=$STATUS"
-
-      - name: Download AAB
-        if: steps.gate.outputs.enabled == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: android-aab-release
-          path: play
-
-      - name: Release notes (fastlane changelogs → whatsnew)
-        if: steps.gate.outputs.enabled == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.meta.outputs.version }}"
-          VERSION="${VERSION#v}"
-          # Тот же код, что зашит в AAB (шаг Build AAB: universal, ABI=0).
-          BASE=$(scripts/version-code.sh "$VERSION" universal)
-          echo "versionCode (AAB) = $BASE"
-          RBASE=""
-          if [[ "$VERSION" == *-rc.* ]]; then
-            RBASE=$(scripts/version-code.sh "${VERSION%%-rc.*}" universal)
-            echo "versionCode релиза той же версии (фоллбэк changelog) = $RBASE"
-          fi
-          mkdir -p play/whatsnew
-          # Каталог fastlane `ru` — соглашение F-Droid; Play ждёт ru-RU.
-          for PAIR in en-US:en-US ru:ru-RU; do
-            SRC="${PAIR%%:*}"; LOCALE="${PAIR##*:}"
-            DIR="fastlane/metadata/android/$SRC/changelogs"
-            FILE=""
-            # AAB несёт universal-код (…0), а файлы лежат под per-ABI кодами
-            # (…1/…2, содержимое одно) — так их читает F-Droid по коду каждого
-            # своего APK. Берём первый найденный.
-            for SUFFIX in 0 2 1 4; do
-              CAND="$DIR/$((BASE + SUFFIX)).txt"
-              if [ -f "$CAND" ]; then FILE="$CAND"; break; fi
-            done
-            # §619 — у кандидата своих файлов обычно нет: заметки пишутся
-            # заранее под код финального релиза той же версии (PRE=50).
-            if [ -z "$FILE" ] && [ -n "$RBASE" ]; then
-              for SUFFIX in 0 2 1 4; do
-                CAND="$DIR/$((RBASE + SUFFIX)).txt"
-                if [ -f "$CAND" ]; then FILE="$CAND"; break; fi
-              done
-              if [ -n "$FILE" ]; then
-                echo "$SRC: нет changelog под кодом кандидата, взят файл релиза $FILE"
-              fi
-            fi
-            if [ -z "$FILE" ]; then
-              echo "::warning::Нет changelog для $SRC (коды $BASE…$((BASE + 4))${RBASE:+, $RBASE…$((RBASE + 4))}) — выпуск в Play уйдёт без описания для $LOCALE; допишите его в консоли."
-              continue
-            fi
-            # Лимит 500 уже проверен в job checks на каждом файле; здесь
-            # только страховка, чтобы не уронить заливку из-за описания.
-            N=$(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read().rstrip("\n")))' "$FILE")
-            if [ "$N" -gt 500 ]; then
-              echo "::warning::$FILE: $N символов, лимит Play 500 — описание для $LOCALE пропущено."
-              continue
-            fi
-            cp "$FILE" "play/whatsnew/whatsnew-$LOCALE"
-            echo "$LOCALE ← $FILE ($N символов)"
-          done
-          ls -la play/whatsnew
-
-      - name: Upload to Google Play
-        if: steps.gate.outputs.enabled == 'true'
-        # Пин по SHA, не по @v1: шаг получает ключ сервисного аккаунта.
-        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-          packageName: com.leadaxe.lxbox
-          releaseFiles: play/app-release.aab
-          track: ${{ steps.target.outputs.track }}
-          status: ${{ steps.target.outputs.status }}
-          whatsNewDirectory: play/whatsnew
-
-  release:
-    name: Create Release
-    needs: [meta, android]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    if: needs.meta.outputs.is_release == 'true'
-    steps:
-      - name: Checkout (for release notes)
-        uses: actions/checkout@v7
-        with:
-          sparse-checkout: RELEASE_NOTES.md
-          sparse-checkout-cone-mode: false
-
-      - name: Download APKs
-        uses: actions/download-artifact@v8
-        with:
-          name: android-apks-release
-          path: release-artifacts
-
-      - name: Prepare APKs
-        # Renames per-ABI / universal files to LxBox-vX.Y.Z-<variant>.apk
-        # для консистентности с прошлыми релизами (UpdateChecker парсит имя).
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.meta.outputs.version }}"
-          for VARIANT in arm64-v8a armeabi-v7a x86_64 universal; do
-            SRC=$(find release-artifacts/ -name "app-${VARIANT}-release.apk" -type f | head -1)
-            if [ -z "$SRC" ]; then
-              echo "ERROR: APK for variant=$VARIANT not found!"
-              exit 1
-            fi
-            cp "$SRC" "LxBox-${VERSION}-${VARIANT}.apk"
-          done
-          ls -la LxBox-*.apk
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ needs.meta.outputs.tag }}
-          name: LxBox ${{ needs.meta.outputs.version }}
-          draft: false
-          # §436 — rc помечается pre-release: GitHub не делает его Latest, и
-          # /releases/latest (UpdateChecker) продолжает отдавать прошлый stable.
-          prerelease: ${{ needs.meta.outputs.is_prerelease == 'true' }}
-          files: |
-            LxBox-${{ needs.meta.outputs.version }}-arm64-v8a.apk
-            LxBox-${{ needs.meta.outputs.version }}-armeabi-v7a.apk
-            LxBox-${{ needs.meta.outputs.version }}-x86_64.apk
-            LxBox-${{ needs.meta.outputs.version }}-universal.apk
-          body_path: RELEASE_NOTES.md
-
-  publish-manifest:
-    name: Publish docs/latest.json
-    needs: [meta, release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    # §436 — rc не трогает latest.json: это фоллбэк UpdateChecker'а, и кандидат
-    # в нём предложился бы всем GitHub-пользователям.
-    if: needs.meta.outputs.is_release == 'true' && needs.meta.outputs.is_prerelease != 'true'
-    steps:
-      - name: Checkout main
-        uses: actions/checkout@v7
-        with:
-          ref: main
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update docs/latest.json
-        env:
-          TAG: ${{ needs.meta.outputs.tag }}
-          VERSION: ${{ needs.meta.outputs.version }}
-        run: |
-          mkdir -p docs
-          NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          BASE="https://github.com/Leadaxe/LxBox/releases/download/${TAG}"
-          cat > docs/latest.json <<EOF
-          {
-            "\$schema": "https://github.com/Leadaxe/LxBox/blob/main/docs/latest.json",
-            "tag": "${TAG}",
-            "name": "L×Box ${VERSION}",
-            "published_at": "${NOW}",
-            "html_url": "https://github.com/Leadaxe/LxBox/releases/tag/${TAG}",
-            "apk_url": "${BASE}/LxBox-${VERSION}-universal.apk",
-            "apk_urls": {
-              "arm64-v8a":   "${BASE}/LxBox-${VERSION}-arm64-v8a.apk",
-              "armeabi-v7a": "${BASE}/LxBox-${VERSION}-armeabi-v7a.apk",
-              "x86_64":      "${BASE}/LxBox-${VERSION}-x86_64.apk",
-              "universal":   "${BASE}/LxBox-${VERSION}-universal.apk"
-            },
-            "min_supported": "1.0.0",
-            "_comment": "Updated automatically by CI on every release tag push (see .github/workflows/ci.yml). Used by UpdateChecker as a fallback when api.github.com is rate-limited. apk_url = universal fallback (works on any ABI). apk_urls.<abi> = per-architecture optimized variants."
-          }
-          EOF
-          cat docs/latest.json
-
-      - name: Commit & push (main)
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet docs/latest.json; then
-            echo "No change in docs/latest.json — skipping commit."
-            exit 0
-          fi
-          git add docs/latest.json
-          # [skip ci] чтобы не триггерить новый CI run на собственный коммит
-          git commit -m "chore(release): update docs/latest.json → ${{ needs.meta.outputs.tag }} [skip ci]"
-          git push origin HEAD:main
-
-
-  fork-release:
-    name: Publish Fork Release
-    needs: [meta, android]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      (github.event.inputs.run_mode == 'build-fast' || github.event.inputs.run_mode == 'build')
-    steps:
-      - name: Download APKs
-        uses: actions/download-artifact@v8
-        with:
-          name: android-apks-release
-          path: release-artifacts
-
-      - name: Rename APKs
-        run: |
-          VERSION="${{ needs.meta.outputs.version }}"
-          for f in release-artifacts/app-*-release.apk; do
+          FOUND=0
+          for f in build/app/outputs/flutter-apk/app-*-release.apk; do
+            [ -e "$f" ] || continue
+            FOUND=1
             VARIANT=$(basename "$f" | sed -E 's/^app-(.*)-release\.apk$/\1/')
-            mv "$f" "release-artifacts/LxBox-${VERSION}-${VARIANT}.apk"
+            OUT="/tmp/LxBox-${APP_VERSION}-${VARIANT}.apk"
+            cp "$f" "$OUT"
+            curl -sf -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+              -F "chat_id=${TG_CHAT_ID}" \
+              -F "document=@${OUT}" \
+              -F "caption=L×Box v${APP_VERSION} (${VARIANT})" > /dev/null
+            rm -f "$OUT"
           done
-          ls -la release-artifacts/
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: "v${{ needs.meta.outputs.version }}"
-          name: "L×Box v${{ needs.meta.outputs.version }}"
-          generate_release_notes: true
-          files: release-artifacts/LxBox-*.apk
+          [ "$FOUND" -eq 1 ]
