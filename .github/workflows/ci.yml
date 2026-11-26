@@ -253,6 +253,8 @@ jobs:
        (github.event_name == 'workflow_dispatch' && github.event.inputs.run_mode != 'checks'))
     needs: [meta, checks]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: app
@@ -336,8 +338,6 @@ jobs:
 
       - name: Build APKs (one run per target)
         shell: bash
-        env:
-          SUB_ENC_KEY: ${{ secrets.SUB_ENC_KEY }}
         run: |
           set -euo pipefail
           OUT=build/app/outputs/flutter-apk
@@ -349,12 +349,10 @@ jobs:
             if [ -n "$ABI_FILTER" ]; then
               LXBOX_ABI_FILTER="$ABI_FILTER" \
                 flutter build apk --release \
-                  --dart-define=SUB_ENC_KEY="$SUB_ENC_KEY" \
                   --target-platform "$PLATFORM" \
                   --build-name "$VERSION_NAME" --build-number "$CODE"
             else
               flutter build apk --release \
-                --dart-define=SUB_ENC_KEY="$SUB_ENC_KEY" \
                 --build-name "$VERSION_NAME" --build-number "$CODE"
             fi
             mv "$OUT/app-release.apk" "$OUT/app-${VARIANT}-release.apk"
@@ -376,7 +374,7 @@ jobs:
           ls -la "$OUT"/app-*-release.apk
 
       - name: Send APK to private Telegram channel
-        if: always() && (github.event.inputs.run_mode == 'build-fast' || github.event.inputs.run_mode == 'build')
+        if: success() && (github.event.inputs.run_mode == 'build-fast' || github.event.inputs.run_mode == 'build')
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
@@ -397,3 +395,13 @@ jobs:
             rm -f "$OUT"
           done
           [ "$FOUND" -eq 1 ]
+
+      - name: Publish APK to GitHub Releases
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag || format('build-{0}', github.run_number) }}
+          name: L×Box ${{ needs.meta.outputs.version }} (build #${{ github.run_number }})
+          files: app/build/app/outputs/flutter-apk/app-*-release.apk
+          prerelease: ${{ needs.meta.outputs.is_prerelease == 'true' }}
+          make_latest: true
