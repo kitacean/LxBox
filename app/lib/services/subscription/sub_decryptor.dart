@@ -7,6 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../app_log.dart';
 import '../parser/engine/decoders.dart' show decodeUtf8Lenient;
 
+typedef _KeyMap = Map<String, String>;
+
 /// Расшифровка кастомных зашифрованных подписок формата:
 /// `ENC:<base64(iv_12 + ciphertext + gcm_tag_16)>`
 ///
@@ -20,7 +22,7 @@ class SubDecryptor {
 
   static bool isValidHexKey(String key) => _hex64Re.hasMatch(key.trim());
 
-  static Future> _loadMap() async {
+  static Future<_KeyMap> _loadMap() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_prefsKey);
     if (raw == null || raw.isEmpty) return {};
@@ -35,7 +37,7 @@ class SubDecryptor {
     return {};
   }
 
-  static Future<void> _saveMap(Map<String, String> map) async {
+  static Future<void> _saveMap(_KeyMap map) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_prefsKey, jsonEncode(map));
   }
