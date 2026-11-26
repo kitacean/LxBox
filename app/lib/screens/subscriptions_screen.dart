@@ -11,6 +11,8 @@ import '../services/community_servers_loader.dart';
 import '../services/error_format.dart';
 import '../services/settings_storage.dart';
 import '../services/subscription/auto_updater.dart';
+import '../services/subscription/input_helpers.dart' show isSubscriptionUrl;
+import '../services/subscription/sub_decryptor.dart';
 import '../services/url_launcher.dart';
 import 'add_server_wizard_screen.dart';
 import 'app_settings_screen.dart';
@@ -592,6 +594,74 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
+  /// Если подписка зашифрована (`ENC:`) и ключ ещё не сохранён — просим ключ
+  /// прямо в диалоге и повторяем `addFromInput`.
+  Future<bool> _retryWithEncryptionKey(String text, {UserSource? origin}) async {
+    if (!mounted || !isSubscriptionUrl(text)) return false;
+    final errText = widget.subController.lastError?.render().toLowerCase() ?? '';
+    if (!errText.contains('encryption key')) return false;
+
+    final ctrl = TextEditingController();
+    String? error;
+
+    final key = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          // l10n-exempt: fork-only UI
+          title: const Text('Ключ шифрования (AES-256)'),
+          content: TextField(
+            controller: ctrl,
+            autofocus: true,
+            maxLines: 2,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            decoration: InputDecoration(
+              border: const OutlineInputBorder(),
+              // l10n-exempt: fork-only UI
+              hintText: '64 hex-символа',
+              errorText: error,
+            ),
+            onChanged: (_) {
+              if (error != null) setDialogState(() => error = null);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              // l10n-exempt: fork-only UI
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final v = ctrl.text.trim();
+                if (!SubDecryptor.isValidHexKey(v)) {
+                  setDialogState(
+                    () => error = 'Нужно ровно 64 hex-символа (0-9, a-f)',
+                  );
+                  return;
+                }
+                Navigator.pop(ctx, v);
+              },
+              // l10n-exempt: fork-only UI
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    ctrl.dispose();
+    if (key == null || key.isEmpty || !mounted) return false;
+
+    await SubDecryptor.setKeyForUrl(text, key);
+    if (origin != null) {
+      await widget.subController.addFromInput(text, origin: origin);
+    } else {
+      await widget.subController.addFromInput(text);
+    }
+    return widget.subController.lastError == null;
+  }
+
   Future<void> _add() async {
     final text = _inputController.text.trim();
     if (text.isEmpty) {
@@ -602,6 +672,9 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
     }
     final baseline = _entryIds(widget.subController);
     await widget.subController.addFromInput(text);
+    if (widget.subController.lastError != null) {
+      await _retryWithEncryptionKey(text);
+    }
     if (widget.subController.lastError == null) {
       _ignoreInputDismiss = true;
       _inputController.clear();
@@ -666,6 +739,9 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
     if (confirmed != true || !mounted) return;
     final baseline = _entryIds(widget.subController);
     await widget.subController.addFromInput(text);
+    if (widget.subController.lastError != null) {
+      await _retryWithEncryptionKey(text);
+    }
     final addErr = widget.subController.lastError;
     if (addErr == null) {
       _snackCommentsRemoved();
@@ -717,6 +793,9 @@ class _SubscriptionsScreenState extends State<SubscriptionsScreen> {
     final baseline = _entryIds(widget.subController);
     await widget.subController
         .addFromInput(text, origin: UserSource.qr);
+    if (widget.subController.lastError != null) {
+      await _retryWithEncryptionKey(text, origin: UserSource.qr);
+    }
     final addErr = widget.subController.lastError;
     if (addErr == null) {
       await _regenerateAndSave(entryBaseline: baseline);
